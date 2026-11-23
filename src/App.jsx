@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import 'leaflet/dist/leaflet.css';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker } from 'react-leaflet';
+import { api } from './api.js';
 
 /* Dados */
 
@@ -23,7 +24,7 @@ const LOGO = (
   <svg width="32" height="32" viewBox="0 0 32 32" aria-hidden="true">
     <path d="M4 24 L16 6 L28 24 L20 24 L16 17 L12 24Z" fill="#00A847" />
   </svg>
-);
+)
 
 const Shirt = ({ label }) => (
   <svg width="96" height="96" viewBox="0 0 96 96" role="img" aria-label={label}>
@@ -43,28 +44,14 @@ const INITIAL_STATE = {
   user: null,
   role: 'cliente',
   view: '',
-  orders: [
-    { id: 'P-1042', prod: 'Tênis de corrida', cor: 'Verde', tam: '41', qtd: 1, st: 1, cli: 'CLI-7K2M', dk: 'translog' },
-    { id: 'P-1043', prod: 'Mochila de trilha', cor: 'Preto', tam: 'M', qtd: 2, st: 0, cli: 'CLI-7K2M', dk: 'rotanorte' },
-    { id: 'P-1031', prod: 'Jaqueta corta-vento', cor: 'Prata', tam: 'G', qtd: 1, st: 2, cli: 'CLI-7K2M', dk: 'express' },
-    { id: 'P-1044', prod: 'Boné esportivo', cor: 'Verde', tam: 'Único', qtd: 3, st: 1, cli: 'CLI-9X4Q', dk: 'translog' }
-  ],
-  stock: [
-    { id: 1, nome: 'Tênis de corrida', cor: 'Verde', tam: '41', q: 12, min: 5 },
-    { id: 2, nome: 'Mochila de trilha', cor: 'Preto', tam: 'M', q: 3, min: 5 },
-    { id: 3, nome: 'Jaqueta corta-vento', cor: 'Prata', tam: 'G', q: 8, min: 4 },
-    { id: 4, nome: 'Boné esportivo', cor: 'Verde', tam: 'Único', q: 2, min: 4 }
-  ],
-  chats: {
-    translog: { nome: 'TransLog Piauí', msgs: [{ me: 0, t: 'Olá! Seu pedido P-1042 saiu para entrega e deve chegar hoje.', h: '09:12' }] },
-    rotanorte: { nome: 'Rota Norte Distribuidora', msgs: [{ me: 0, t: 'Seu pedido P-1043 está em separação. Previsão de saída amanhã cedo.', h: '08:40' }] },
-    express: { nome: 'Express Teresina', msgs: [{ me: 0, t: 'Pedido P-1031 entregue. Obrigado pela preferência!', h: 'Ontem' }] }
-  },
-  chatsA: {
-    c1: { nome: 'Cliente CLI-7K2M', msgs: [{ me: 0, t: 'Bom dia! Posso mudar o endereço de entrega do P-1042?', h: '09:30' }] },
-    c2: { nome: 'Cliente CLI-9X4Q', msgs: [{ me: 0, t: 'O boné veio na cor errada. Como faço a troca?', h: '10:05' }] }
-  },
-  cur: { cliente: null, admin: null },
+  orders: [],
+  stock: [],
+  chats: {},
+  chatsA: {},
+  clients: [],
+  companies: [],
+  drivers: [],
+  cur: { cliente: null, admin: null, entregador: null },
   from: null,
   sort: { k: 'nome', d: 1 },
   q: '',
@@ -72,16 +59,29 @@ const INITIAL_STATE = {
   alerts: true
 };
 
+const emptyState = () => ({
+  ...INITIAL_STATE,
+  cur: { ...INITIAL_STATE.cur },
+  sort: { ...INITIAL_STATE.sort }
+});
+
 const NAV = {
   cliente: [
     ['pedidos', 'Meus pedidos'],
     ['chat', 'Mensagens'],
     ['perfil', 'Perfil']
   ],
+  entregador: [
+    ['entregas', 'Entregas'],
+    ['chatE', 'Mensagens'],
+    ['perfil', 'Perfil']
+  ],
   admin: [
     ['visao', 'Visão geral'],
     ['estoque', 'Estoque'],
     ['pedidosA', 'Pedidos'],
+    ['clientes', 'Clientes'],
+    ['entregadores', 'Entregadores'],
     ['chatA', 'Atendimento']
   ]
 };
@@ -89,16 +89,104 @@ const NAV = {
 /* COMPONENTES PRINCIPAIS */
 
 export default function App() {
-  const [S, setS] = useState(INITIAL_STATE);
+  const [S, setS] = useState(emptyState);
   const [toasts, setToasts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [modalConfig, setModalConfig] = useState(null);
+  const [booting, setBooting] = useState(() => api.hasToken());
 
   const addToast = (msg) => {
-    const id = Date.now();
+    const id = Date.now() + Math.random();
     setToasts((prev) => [...prev, { id, msg }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3500);
   };
+
+  const applyServerState = useCallback((serverState) => {
+    if (!serverState) return;
+    setS((prev) => ({
+      ...prev,
+      user: serverState.user,
+      role: serverState.role,
+      orders: serverState.orders,
+      stock: serverState.stock,
+      chats: serverState.chats,
+      chatsA: serverState.chatsA,
+      clients: serverState.clients,
+      companies: serverState.companies,
+      drivers: serverState.drivers,
+      alerts: serverState.alerts
+    }));
+  }, []);
+
+  const resetSession = useCallback(() => {
+    api.clearToken();
+    setS(emptyState());
+    setLoading(false);
+    setModalConfig(null);
+  }, []);
+
+  const handleAuth = useCallback(({ token, state }) => {
+    api.setToken(token);
+    setS({ ...emptyState(), ...state });
+  }, []);
+
+  const handleLogout = async (notify = true) => {
+    try {
+      await api.logout();
+    } catch {
+      // a sessão local será encerrada de qualquer forma
+    }
+    resetSession();
+    if (notify) addToast('Sessão encerrada.');
+  };
+
+  useEffect(() => {
+    if (!api.hasToken()) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { state } = await api.getSession();
+        if (!cancelled) setS({ ...emptyState(), ...state });
+      } catch {
+        if (!cancelled) resetSession();
+      } finally {
+        if (!cancelled) setBooting(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [resetSession]);
+
+  useEffect(() => {
+    const onUnauthorized = () => resetSession();
+    window.addEventListener('gestao-rotas:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('gestao-rotas:unauthorized', onUnauthorized);
+  }, [resetSession]);
+
+  const currentUserId = S.user?.id;
+
+  useEffect(() => {
+    if (!currentUserId) return undefined;
+    let cancelled = false;
+    let busy = false;
+    const timer = setInterval(async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const { state } = await api.getData();
+        if (!cancelled) applyServerState(state);
+      } catch (err) {
+        if (err.status === 401 && !cancelled) resetSession();
+      } finally {
+        busy = false;
+      }
+    }, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [currentUserId, S.role, applyServerState, resetSession]);
 
   const changeView = (newView) => {
     setLoading(true);
@@ -110,12 +198,30 @@ export default function App() {
         from: null
       }));
       setLoading(false);
-    }, 400);
+    }, 250);
   };
 
-  if (!S.user) {
-    return <AuthScreen S={S} setS={setS} addToast={addToast} />;
+  if (booting) {
+    return (
+      <div id="app" className="dark">
+        <main className="auth">
+          <section className="auth-box boot">
+            <div className="logo">
+              {LOGO}
+              <span>Gestão e <b>Rotas</b></span>
+            </div>
+            <p>Carregando…</p>
+          </section>
+        </main>
+      </div>
+    );
   }
+
+  if (!S.user) {
+    return <AuthScreen onAuth={handleAuth} addToast={addToast} />;
+  }
+
+  const trackingParent = { cliente: 'pedidos', admin: 'pedidosA', entregador: 'entregas' }[S.role];
 
   return (
     <div id="app">
@@ -134,14 +240,14 @@ export default function App() {
           {NAV[S.role].map(([k, l]) => (
             <button
               key={k}
-              aria-current={S.view === k || (S.view === 'rastreio' && k === 'pedidos') ? 'page' : undefined}
+              aria-current={S.view === k || (S.view === 'rastreio' && k === trackingParent) ? 'page' : undefined}
               onClick={() => changeView(k)}
             >
               {l}
             </button>
           ))}
         </nav>
-        <button className="btn" onClick={() => setS((prev) => ({ ...prev, user: null }))}>
+        <button className="btn" onClick={() => handleLogout()}>
           Sair
         </button>
       </header>
@@ -162,6 +268,7 @@ export default function App() {
               changeView={changeView}
               setModalConfig={setModalConfig}
               setLoading={setLoading}
+              applyServerState={applyServerState}
             />
           )}
         </div>
@@ -176,145 +283,402 @@ export default function App() {
 
 /* TELA DE AUTENTICAÇÃO*/
 
-function AuthScreen({ S, setS, addToast }) {
-  const [mode, setMode] = useState('in');
-  const [form, setForm] = useState({ nome: '', em: '', pw: '' });
+const EMAIL_RE = /^\S+@\S+\.\S+$/;
+
+const onlyDigits = (v) => v.replace(/\D/g, '');
+
+const formatCnpj = (value) => {
+  const d = onlyDigits(value).slice(0, 14);
+  if (d.length > 12) {
+    return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
+  }
+  if (d.length > 8) return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8)}`;
+  if (d.length > 5) return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5)}`;
+  if (d.length > 2) return `${d.slice(0, 2)}.${d.slice(2)}`;
+  return d;
+};
+
+function AuthScreen({ onAuth, addToast }) {
+  const [portal, setPortal] = useState('cliente');
+  const [empresaMode, setEmpresaMode] = useState('in');
+  const [clienteForm, setClienteForm] = useState({ em: '', pw: '' });
+  const [empresaForm, setEmpresaForm] = useState({
+    nome: '',
+    abertura: '',
+    cnpj: '',
+    em: '',
+    pw: ''
+  });
+  const [entregadorForm, setEntregadorForm] = useState({ em: '', pw: '' });
   const [errors, setErrors] = useState({});
+  const [loginError, setLoginError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
-  const validate = (field, val) => {
-    let ok = true;
-    let msg = '';
-    if (field === 'nome') {
-      ok = val.trim().split(/\s+/).length > 1;
-      msg = 'Informe nome e sobrenome.';
-    } else if (field === 'em') {
-      ok = /^\S+@\S+\.\S+$/.test(val);
-      msg = 'Digite um e-mail válido.';
-    } else if (field === 'pw') {
-      ok = val.length >= 6;
-      msg = 'A senha precisa ter ao menos 6 caracteres.';
-    }
-    setErrors((prev) => ({ ...prev, [field]: ok ? '' : msg }));
-    return ok;
-  };
-
-  const handleChange = (field, val) => {
-    setForm((prev) => ({ ...prev, [field]: val }));
-    validate(field, val);
-  };
-
-  const handleSubmit = () => {
-    const isSignUp = mode === 'up';
-    const fieldsToValidate = isSignUp ? ['nome', 'em', 'pw'] : ['em', 'pw'];
-    let valid = true;
-
-    fieldsToValidate.forEach((f) => {
-      if (!validate(f, form[f])) valid = false;
+  const switchPortal = () => {
+    setPortal((prev) => {
+      if (prev === 'cliente') return 'empresa';
+      if (prev === 'empresa') return 'cliente';
+      return 'empresa';
     });
+    setErrors({});
+    setLoginError('');
+  };
 
-    if (!valid) return;
+  const changeCliente = (field, val) => {
+    setClienteForm((prev) => ({ ...prev, [field]: val }));
+    setErrors((prev) => ({ ...prev, [field]: '' }));
+    setLoginError('');
+  };
 
-    const nome = isSignUp ? form.nome : form.em.split('@')[0];
-    const userId = S.role === 'cliente' ? 'CLI-7K2M' : 'ADM-001';
-    const initialView = S.role === 'cliente' ? 'pedidos' : 'visao';
+  const changeEmpresa = (field, val) => {
+    setEmpresaForm((prev) => ({ ...prev, [field]: val }));
+    setErrors((prev) => ({ ...prev, [field]: '' }));
+    setLoginError('');
+  };
 
-    setS((prev) => ({
-      ...prev,
-      user: { nome, em: form.em, id: userId },
-      view: initialView
-    }));
+  const changeEntregador = (field, val) => {
+    setEntregadorForm((prev) => ({ ...prev, [field]: val }));
+    setErrors((prev) => ({ ...prev, [field]: '' }));
+    setLoginError('');
+  };
 
-    if (isSignUp && S.role === 'cliente') {
-      addToast(`Conta criada. ID ${userId} gerado com sucesso.`);
+  const loginCliente = async (e) => {
+    e.preventDefault();
+    const errs = {};
+    if (!EMAIL_RE.test(clienteForm.em.trim())) errs.em = 'Digite um e-mail válido.';
+    if (!clienteForm.pw.trim()) errs.pw = 'Informe a senha (ID fornecido pela empresa).';
+    setErrors(errs);
+    if (Object.keys(errs).length) return;
+
+    setSubmitting(true);
+    setLoginError('');
+    try {
+      const data = await api.loginClient(clienteForm.em.trim(), clienteForm.pw.trim());
+      onAuth(data);
+    } catch (err) {
+      setLoginError(err.message || 'E-mail ou senha inválidos.');
+    } finally {
+      setSubmitting(false);
     }
   };
+
+  const loginEntregador = async (e) => {
+    e.preventDefault();
+    const errs = {};
+    if (!EMAIL_RE.test(entregadorForm.em.trim())) errs.em = 'Digite um e-mail válido.';
+    if (!entregadorForm.pw.trim()) errs.pw = 'Informe o código de acesso.';
+    setErrors(errs);
+    if (Object.keys(errs).length) return;
+
+    setSubmitting(true);
+    setLoginError('');
+    try {
+      const data = await api.loginDriver(entregadorForm.em.trim(), entregadorForm.pw.trim());
+      onAuth(data);
+    } catch (err) {
+      setLoginError(err.message || 'E-mail ou código inválidos.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const submitEmpresa = async (e) => {
+    e.preventDefault();
+    const isSignUp = empresaMode === 'up';
+    const cnpjDigits = onlyDigits(empresaForm.cnpj);
+    const errs = {};
+
+    if (isSignUp && empresaForm.nome.trim().length < 2) {
+      errs.nome = 'Informe o nome da empresa.';
+    }
+    if (isSignUp && !empresaForm.abertura) {
+      errs.abertura = 'Informe a data de abertura.';
+    }
+    if (cnpjDigits.length !== 14) {
+      errs.cnpj = 'O CNPJ deve ter 14 dígitos.';
+    }
+    if (isSignUp && !EMAIL_RE.test(empresaForm.em.trim())) {
+      errs.em = 'Digite um e-mail válido.';
+    }
+    if (isSignUp && empresaForm.pw.length < 6) {
+      errs.pw = 'A senha precisa ter ao menos 6 caracteres.';
+    } else if (!isSignUp && !empresaForm.pw) {
+      errs.pw = 'Informe a senha.';
+    }
+
+    setErrors(errs);
+    if (Object.keys(errs).length) return;
+
+    setSubmitting(true);
+    setLoginError('');
+    try {
+      const data = isSignUp
+        ? await api.registerCompany({
+            nome: empresaForm.nome.trim(),
+            abertura: empresaForm.abertura,
+            cnpj: cnpjDigits,
+            em: empresaForm.em.trim(),
+            pw: empresaForm.pw
+          })
+        : await api.loginCompany(cnpjDigits, empresaForm.pw);
+
+      onAuth(data);
+      if (isSignUp) addToast('Empresa cadastrada com sucesso.');
+    } catch (err) {
+      if (isSignUp && /CNPJ/i.test(err.message || '')) {
+        setErrors({ cnpj: err.message });
+      } else {
+        setLoginError(err.message || 'Não foi possível concluir.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const topLabel =
+    portal === 'cliente' ? 'Corporativo' : portal === 'entregador' ? 'Voltar' : 'Login do Cliente';
 
   return (
     <div id="app" className="dark">
+      <button type="button" className="btn auth-top" onClick={switchPortal}>
+        {topLabel}
+      </button>
+
       <main className="auth">
-        <section className="auth-box">
-          <div className="logo">
-            {LOGO}
-            <span>Gestão e <b>Rotas</b></span>
-          </div>
-          <h1>Entrar ou criar conta</h1>
+        {portal === 'cliente' ? (
+          <section className="auth-box">
+            <div className="logo">
+              {LOGO}
+              <span>Gestão e <b>Rotas</b></span>
+            </div>
+            <h1>Login do Cliente</h1>
 
-          <div className="seg">
+            <form onSubmit={loginCliente}>
+              <label className="field">
+                <span className="l">E-mail</span>
+                <input
+                  type="email"
+                  value={clienteForm.em}
+                  onChange={(e) => changeCliente('em', e.target.value)}
+                  autoComplete="username"
+                />
+                {errors.em && <div className="hint err">{errors.em}</div>}
+              </label>
+
+              <label className="field">
+                <span className="l">Senha</span>
+                <input
+                  type="password"
+                  value={clienteForm.pw}
+                  onChange={(e) => changeCliente('pw', e.target.value)}
+                  autoComplete="current-password"
+                />
+                {errors.pw && <div className="hint err">{errors.pw}</div>}
+              </label>
+
+              {loginError && (
+                <div className="hint err" style={{ marginBottom: '16px' }}>{loginError}</div>
+              )}
+
+              <button
+                className="btn pri"
+                type="submit"
+                style={{ width: '100%' }}
+                disabled={submitting}
+              >
+                {submitting ? 'Entrando…' : 'Entrar'}
+              </button>
+            </form>
+
+            <p className="auth-note">A senha é o ID de acesso gerado pela sua empresa.</p>
+          </section>
+        ) : portal === 'empresa' ? (
+          <section className="auth-box">
+            <div className="logo">
+              {LOGO}
+              <span>Gestão e <b>Rotas</b></span>
+            </div>
+            <h1>Área Corporativa</h1>
+
+            <div className="seg">
+              <button
+                type="button"
+                className={empresaMode === 'in' ? 'active' : ''}
+                onClick={() => {
+                  setEmpresaMode('in');
+                  setErrors({});
+                  setLoginError('');
+                }}
+              >
+                Entrar
+              </button>
+              <button
+                type="button"
+                className={empresaMode === 'up' ? 'active' : ''}
+                onClick={() => {
+                  setEmpresaMode('up');
+                  setErrors({});
+                  setLoginError('');
+                }}
+              >
+                Cadastrar empresa
+              </button>
+            </div>
+
+            <form onSubmit={submitEmpresa}>
+              {empresaMode === 'up' && (
+                <>
+                  <label className="field">
+                    <span className="l">Nome da empresa</span>
+                    <input
+                      value={empresaForm.nome}
+                      onChange={(e) => changeEmpresa('nome', e.target.value)}
+                    />
+                    {errors.nome && <div className="hint err">{errors.nome}</div>}
+                  </label>
+
+                  <label className="field">
+                    <span className="l">Data de abertura</span>
+                    <input
+                      type="date"
+                      value={empresaForm.abertura}
+                      max={new Date().toISOString().slice(0, 10)}
+                      onChange={(e) => changeEmpresa('abertura', e.target.value)}
+                    />
+                    {errors.abertura && <div className="hint err">{errors.abertura}</div>}
+                  </label>
+                </>
+              )}
+
+              <label className="field">
+                <span className="l">CNPJ</span>
+                <input
+                  inputMode="numeric"
+                  placeholder="00.000.000/0000-00"
+                  value={empresaForm.cnpj}
+                  onChange={(e) => changeEmpresa('cnpj', formatCnpj(e.target.value))}
+                />
+                {errors.cnpj && <div className="hint err">{errors.cnpj}</div>}
+              </label>
+
+              {empresaMode === 'up' && (
+                <label className="field">
+                  <span className="l">E-mail</span>
+                  <input
+                    type="email"
+                    value={empresaForm.em}
+                    onChange={(e) => changeEmpresa('em', e.target.value)}
+                    autoComplete="username"
+                  />
+                  {errors.em && <div className="hint err">{errors.em}</div>}
+                </label>
+              )}
+
+              <label className="field">
+                <span className="l">Senha</span>
+                <input
+                  type="password"
+                  value={empresaForm.pw}
+                  onChange={(e) => changeEmpresa('pw', e.target.value)}
+                  autoComplete={empresaMode === 'up' ? 'new-password' : 'current-password'}
+                />
+                {errors.pw && <div className="hint err">{errors.pw}</div>}
+              </label>
+
+              {loginError && (
+                <div className="hint err" style={{ marginBottom: '16px' }}>{loginError}</div>
+              )}
+
+              <button
+                className="btn pri"
+                type="submit"
+                style={{ width: '100%' }}
+                disabled={submitting}
+              >
+                {submitting
+                  ? empresaMode === 'up'
+                    ? 'Cadastrando…'
+                    : 'Entrando…'
+                  : empresaMode === 'up'
+                    ? 'Cadastrar empresa'
+                    : 'Entrar'}
+              </button>
+            </form>
+
+            {empresaMode === 'in' && (
+              <button
+                type="button"
+                className="btn auth-alt"
+                onClick={() => {
+                  setPortal('entregador');
+                  setErrors({});
+                  setLoginError('');
+                }}
+              >
+                Entrar como entregador
+              </button>
+            )}
+          </section>
+        ) : (
+          <section className="auth-box">
+            <div className="logo">
+              {LOGO}
+              <span>Gestão e <b>Rotas</b></span>
+            </div>
+            <h1>Login do Entregador</h1>
+
+            <form onSubmit={loginEntregador}>
+              <label className="field">
+                <span className="l">E-mail</span>
+                <input
+                  type="email"
+                  value={entregadorForm.em}
+                  onChange={(e) => changeEntregador('em', e.target.value)}
+                  autoComplete="username"
+                />
+                {errors.em && <div className="hint err">{errors.em}</div>}
+              </label>
+
+              <label className="field">
+                <span className="l">Código de acesso</span>
+                <input
+                  type="password"
+                  value={entregadorForm.pw}
+                  onChange={(e) => changeEntregador('pw', e.target.value)}
+                  autoComplete="current-password"
+                />
+                {errors.pw && <div className="hint err">{errors.pw}</div>}
+              </label>
+
+              {loginError && (
+                <div className="hint err" style={{ marginBottom: '16px' }}>{loginError}</div>
+              )}
+
+              <button
+                className="btn pri"
+                type="submit"
+                style={{ width: '100%' }}
+                disabled={submitting}
+              >
+                {submitting ? 'Entrando…' : 'Entrar'}
+              </button>
+            </form>
+
+            <p className="auth-note">O código de acesso é gerado pela empresa.</p>
+
             <button
               type="button"
-              className={S.role === 'cliente' ? 'active' : ''}
-              onClick={() => setS((prev) => ({ ...prev, role: 'cliente' }))}
+              className="btn auth-alt"
+              onClick={() => {
+                setPortal('empresa');
+                setErrors({});
+                setLoginError('');
+              }}
             >
-              Cliente
+              Voltar para login corporativo
             </button>
-            <button
-              type="button"
-              className={S.role === 'admin' ? 'active' : ''}
-              onClick={() => setS((prev) => ({ ...prev, role: 'admin' }))}
-            >
-              Distribuidora / Admin
-            </button>
-          </div>
-
-          <div className="row" style={{ marginBottom: '16px' }}>
-            <label>
-              <input
-                type="radio"
-                name="m"
-                checked={mode === 'in'}
-                onChange={() => setMode('in')}
-              />{' '}
-              Já tenho conta
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="m"
-                checked={mode === 'up'}
-                onChange={() => setMode('up')}
-              />{' '}
-              Quero me cadastrar
-            </label>
-          </div>
-
-          {mode === 'up' && (
-            <label className="field">
-              <span className="l">Nome completo</span>
-              <input
-                value={form.nome}
-                onChange={(e) => handleChange('nome', e.target.value)}
-                className={errors.nome === '' && form.nome ? 'ok' : ''}
-              />
-              {errors.nome && <div className="hint err">{errors.nome}</div>}
-            </label>
-          )}
-
-          <label className="field">
-            <span className="l">E-mail</span>
-            <input
-              type="email"
-              value={form.em}
-              onChange={(e) => handleChange('em', e.target.value)}
-              className={errors.em === '' && form.em ? 'ok' : ''}
-            />
-            {errors.em && <div className="hint err">{errors.em}</div>}
-          </label>
-
-          <label className="field">
-            <span className="l">Senha</span>
-            <input
-              type="password"
-              value={form.pw}
-              onChange={(e) => handleChange('pw', e.target.value)}
-              className={errors.pw === '' && form.pw ? 'ok' : ''}
-            />
-            {errors.pw && <div className="hint err">{errors.pw}</div>}
-          </label>
-
-          <button className="btn pri" style={{ width: '100%' }} onClick={handleSubmit}>
-            {mode === 'up' ? 'Criar conta' : 'Entrar'}
-          </button>
-        </section>
+          </section>
+        )}
       </main>
     </div>
   );
@@ -322,15 +686,40 @@ function AuthScreen({ S, setS, addToast }) {
 
 /* ROTEADOR DE CONTEUDO*/
 
-function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading }) {
+function ViewContent({
+  S,
+  setS,
+  addToast,
+  changeView,
+  setModalConfig,
+  setLoading,
+  applyServerState
+}) {
   const mine = S.orders.filter((o) => o.cli === S.user.id);
 
-  const simulateAsync = (action) => {
+  const runAction = async (action, successMessage) => {
     setLoading(true);
-    setTimeout(() => {
-      action();
+    try {
+      const data = await action();
+      applyServerState(data.state);
+      if (successMessage) addToast(successMessage);
+    } catch (err) {
+      addToast(err.message || 'Não foi possível concluir a ação.');
+    } finally {
       setLoading(false);
-    }, 400);
+    }
+  };
+
+  const changeAlerts = async (value, message) => {
+    setS((prev) => ({ ...prev, alerts: value }));
+    try {
+      const data = await api.updateAlerts(value);
+      applyServerState(data.state);
+      if (message) addToast(message);
+    } catch (err) {
+      setS((prev) => ({ ...prev, alerts: !value }));
+      addToast(err.message || 'Não foi possível atualizar os alertas.');
+    }
   };
 
   switch (S.view) {
@@ -339,6 +728,7 @@ function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading
         <>
           <h1>Meus pedidos</h1>
           <p>Acompanhe cada compra e rastreie a entrega.</p>
+          {mine.length === 0 && <p>Nenhum pedido encontrado para este acesso.</p>}
           <div className="grid c3">
             {mine.map((o) => (
               <article key={o.id} className="card">
@@ -366,40 +756,203 @@ function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading
         </>
       );
 
-    case 'rastreio': {
-      const o = S.orders.find((x) => x.id === S.track) || mine[0] || S.orders[0];
-      const st = typeof o?.st === 'number' && o.st >= 0 && o.st <= 2 ? o.st : 0;
+    case 'entregas':
+      return (
+        <>
+          <h1>Minhas entregas</h1>
+          <p>Atualize o status e acompanhe a localização de cada entrega.</p>
+          <div className="grid c3">
+            {S.orders.map((o) => {
+              const cliente = S.clients.find((c) => c.id === o.cli);
+              return (
+                <article key={o.id} className="card">
+                  <h2>{o.id}: {o.prod}</h2>
+                  <Badge index={o.st} />
+                  <p>
+                    {o.cor}, tam. {o.tam}, {o.qtd} un.<br />
+                    Cliente {cliente ? cliente.nome : o.cli} · {DISTS[o.dk]}
+                  </p>
+                  <label className="field">
+                    <span className="l">Atualizar status</span>
+                    <select
+                      value={o.st}
+                      onChange={(e) => {
+                        const newSt = Number(e.target.value);
+                        runAction(
+                          () => api.updateOrderStatus(o.id, newSt),
+                          `Pedido ${o.id} atualizado.`
+                        );
+                      }}
+                    >
+                      {ST.map((s, i) => (
+                        <option key={i} value={i}>{s}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    className="btn"
+                    style={{ width: '100%' }}
+                    onClick={() => setS((prev) => ({ ...prev, track: o.id, view: 'rastreio' }))}
+                  >
+                    Ver no mapa
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        </>
+      );
 
-      // Coordenadas das etapas (exemplo Teresina - PI)
+    case 'rastreio': {
+      const backView =
+        S.role === 'admin' ? 'pedidosA' : S.role === 'entregador' ? 'entregas' : 'pedidos';
+      const backLabel =
+        S.role === 'admin'
+          ? 'Voltar para pedidos'
+          : S.role === 'entregador'
+            ? 'Voltar para entregas'
+            : 'Voltar para meus pedidos';
+      const o = S.orders.find((x) => x.id === S.track) || mine[0] || S.orders[0];
+
+      if (!o) {
+        return (
+          <>
+            <button
+              className="btn sm"
+              style={{ marginBottom: '16px' }}
+              onClick={() => changeView(backView)}
+            >
+              {backLabel}
+            </button>
+            <h1>Rastreamento</h1>
+            <p>Nenhum pedido disponível para rastrear no momento.</p>
+          </>
+        );
+      }
+
+      const st = typeof o.st === 'number' && o.st >= 0 && o.st <= 2 ? o.st : 0;
+      const driver = S.drivers.find((d) => d.id === o.entregador);
+      const driverName = driver ? driver.nome : 'Aguardando atribuição';
+      const locations = [
+        'Centro de distribuição',
+        'Av. Frei Serafim, Centro',
+        'Endereço do cliente'
+      ];
+      const forecasts = ['Amanhã, 14h', 'Hoje, 16h', 'Entregue'];
+
       const coords = [
-        [-5.08921, -42.8016], // Status 0: Centro de distribuição
-        [-5.08551, -42.8055], // Status 1: A caminho
-        [-5.08012, -42.8123]  // Status 2: Entregue
+        [-5.08921, -42.8016],
+        [-5.08551, -42.8055],
+        [-5.08012, -42.8123]
       ];
       const center = coords[st];
 
       return (
         <>
-          <button className="btn sm" style={{ marginBottom: '16px' }} onClick={() => changeView('pedidos')}>
-            Voltar para meus pedidos
+          <button
+            className="btn sm"
+            style={{ marginBottom: '16px' }}
+            onClick={() => changeView(backView)}
+          >
+            {backLabel}
           </button>
           <h1>Rastreamento do pedido {o.id}</h1>
-          <p>{o.prod}, {o.cor}, tamanho {o.tam}. Distribuidora: <strong>{DISTS[o.dk]}</strong>.</p>
           <p>
-            <button
-              className="btn pri"
-              onClick={() => {
-                setS((prev) => ({
-                  ...prev,
-                  cur: { ...prev.cur, cliente: o.dk },
-                  from: 'rastreio',
-                  view: 'chat'
-                }));
-              }}
-            >
-              Falar com {DISTS[o.dk]}
-            </button>
+            {o.prod}, {o.cor}, tamanho {o.tam}. Distribuidora:{' '}
+            <strong>{DISTS[o.dk]}</strong>.
           </p>
+          <p>
+            Entregador: <strong>{driverName}</strong> — {ST[st]} em{' '}
+            {locations[st].toLowerCase()}.
+          </p>
+
+          <div className="row" style={{ marginBottom: '16px', flexWrap: 'wrap' }}>
+            {S.role === 'cliente' && (
+              <>
+                <button
+                  className="btn pri"
+                  onClick={() => {
+                    setS((prev) => ({
+                      ...prev,
+                      cur: { ...prev.cur, cliente: `empresa-${o.empresaId}` },
+                      from: 'rastreio',
+                      view: 'chat'
+                    }));
+                  }}
+                >
+                  Falar com {S.chats[`empresa-${o.empresaId}`]?.nome || 'a empresa'}
+                </button>
+                {o.entregador && (
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setS((prev) => ({
+                        ...prev,
+                        cur: { ...prev.cur, cliente: `entregador-${o.entregador}-${o.id}` },
+                        from: 'rastreio',
+                        view: 'chat'
+                      }));
+                    }}
+                  >
+                    Falar com o entregador
+                  </button>
+                )}
+              </>
+            )}
+
+            {S.role === 'admin' && o.entregador && (
+              <button
+                className="btn pri"
+                onClick={() => {
+                  setS((prev) => ({
+                    ...prev,
+                    cur: {
+                      ...prev.cur,
+                      admin: `entregador-${o.entregador}-${S.user.companyId}`
+                    },
+                    from: 'rastreio',
+                    view: 'chatA'
+                  }));
+                }}
+              >
+                Falar com o entregador
+              </button>
+            )}
+
+            {S.role === 'entregador' && (
+              <>
+                <button
+                  className="btn pri"
+                  onClick={() => {
+                    setS((prev) => ({
+                      ...prev,
+                      cur: {
+                        ...prev.cur,
+                        entregador: `entregador-${S.user.id}-${S.user.companyId}`
+                      },
+                      from: 'rastreio',
+                      view: 'chatE'
+                    }));
+                  }}
+                >
+                  Falar com a empresa
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    setS((prev) => ({
+                      ...prev,
+                      cur: { ...prev.cur, entregador: `entregador-${S.user.id}-${o.id}` },
+                      from: 'rastreio',
+                      view: 'chatE'
+                    }));
+                  }}
+                >
+                  Falar com o cliente
+                </button>
+              </>
+            )}
+          </div>
 
           <ol className="steps">
             {ST.map((s, i) => (
@@ -411,8 +964,10 @@ function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading
           </ol>
 
           <div className="two">
-            {/* NOVO MAPA LEAFLET (Substituiu o SVG antigo) */}
-            <div className="map" style={{ width: '100%', height: '240px', borderRadius: '8px', overflow: 'hidden' }}>
+            <div
+              className="map"
+              style={{ width: '100%', height: '240px', borderRadius: '8px', overflow: 'hidden' }}
+            >
               <MapContainer
                 key={st}
                 center={center}
@@ -424,23 +979,35 @@ function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading
                   attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
-                <Marker position={center}>
-                  <Popup>{ST[st]}</Popup>
+                <Polyline
+                  positions={coords}
+                  pathOptions={{ color: '#00a847', weight: 4, dashArray: '8 8' }}
+                />
+                <Marker position={coords[2]}>
+                  <Popup>Destino da entrega</Popup>
                 </Marker>
+                <CircleMarker
+                  center={center}
+                  radius={12}
+                  pathOptions={{ color: '#00a847', fillColor: '#00a847', fillOpacity: 0.9 }}
+                >
+                  <Popup>Entregador: {driverName} — {ST[st]}</Popup>
+                </CircleMarker>
               </MapContainer>
             </div>
 
             <div>
-              <h2>Localização em texto</h2>
+              <h2>Rastreamento do entregador</h2>
               <div className="tw">
                 <table>
                   <thead>
                     <tr><th>Item</th><th>Informação</th></tr>
                   </thead>
                   <tbody>
+                    <tr><th>Entregador</th><td>{driverName}</td></tr>
                     <tr><th>Status</th><td>{ST[st]}</td></tr>
-                    <tr><th>Local atual</th><td>{['Centro de distribuição', 'Av. Frei Serafim, Centro', 'Endereço do cliente'][st]}</td></tr>
-                    <tr><th>Previsão</th><td>{['Amanhã, 14h', 'Hoje, 16h', 'Entregue'][st]}</td></tr>
+                    <tr><th>Local do entregador</th><td>{locations[st]}</td></tr>
+                    <tr><th>Previsão</th><td>{forecasts[st]}</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -451,17 +1018,54 @@ function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading
     }
     case 'chat':
     case 'chatA':
+    case 'chatE':
       return (
         <ChatUI
           S={S}
           setS={setS}
           addToast={addToast}
+          applyServerState={applyServerState}
           isAdmin={S.view === 'chatA'}
-          ph={S.view === 'chatA' ? 'Responder chamado' : 'Escreva para a distribuidora'}
+          isDriver={S.view === 'chatE'}
+          ph={
+            S.view === 'chatA'
+              ? 'Responder chamado'
+              : S.view === 'chatE'
+                ? 'Escreva para a empresa ou cliente'
+                : 'Escreva para a distribuidora'
+          }
         />
       );
 
     case 'perfil':
+      if (S.role === 'entregador') {
+        const driver = S.drivers.find((d) => d.id === S.user.id);
+        const entregas = S.orders.filter((o) => o.entregador === S.user.id);
+        return (
+          <>
+            <h1>Perfil</h1>
+            <div className="two" style={{ gridTemplateColumns: '1fr' }}>
+              <section className="card">
+                <h2>Dados do entregador</h2>
+                <dl className="spec">
+                  <dt>Nome</dt><dd>{esc(S.user.nome)}</dd>
+                  <dt>E-mail</dt><dd>{esc(S.user.em)}</dd>
+                  <dt>Código de acesso</dt><dd>{S.user.id}</dd>
+                  <dt>Empresa</dt><dd>{driver?.empresa || '—'}</dd>
+                </dl>
+              </section>
+              <section className="card">
+                <h2>Resumo das entregas</h2>
+                <dl className="spec">
+                  <dt>Total atribuído</dt><dd>{entregas.length}</dd>
+                  <dt>Em andamento</dt><dd>{entregas.filter((o) => o.st === 1).length}</dd>
+                  <dt>Concluídas</dt><dd>{entregas.filter((o) => o.st === 2).length}</dd>
+                </dl>
+              </section>
+            </div>
+          </>
+        );
+      }
       return (
         <>
           <h1>Perfil</h1>
@@ -490,8 +1094,10 @@ function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading
                   checked={S.alerts}
                   onChange={(e) => {
                     const checked = e.target.checked;
-                    setS((prev) => ({ ...prev, alerts: checked }));
-                    addToast(checked ? 'Alertas ativados.' : 'Alertas desativados.');
+                    changeAlerts(
+                      checked,
+                      checked ? 'Alertas ativados.' : 'Alertas desativados.'
+                    );
                   }}
                 />
                 Avisar quando o status do pedido mudar
@@ -514,7 +1120,7 @@ function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading
               </div>
               <div className="row">
                 <button className="btn sm" onClick={() => changeView('estoque')}>Ver estoque</button>
-                <button className="btn sm" onClick={() => setS((prev) => ({ ...prev, alerts: false }))}>Dispensar</button>
+                <button className="btn sm" onClick={() => changeAlerts(false)}>Dispensar</button>
               </div>
             </div>
           )}
@@ -589,11 +1195,10 @@ function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading
                             type: 'edit',
                             data: s,
                             onConfirm: (data) => {
-                              setS((prev) => ({
-                                ...prev,
-       stock: prev.stock.map((x) => (x.id === s.id ? { ...x, ...data } : x))
-                              }));
-                              simulateAsync(() => addToast('Especificações salvas.'));
+                              runAction(
+                                () => api.updateStock(s.id, data),
+                                'Especificações salvas.'
+                              );
                             }
                           });
                         }}
@@ -603,11 +1208,10 @@ function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading
                       <button
                         className="btn sm pri"
                         onClick={() => {
-                          setS((prev) => ({
-                            ...prev,
-                            stock: prev.stock.map((x) => (x.id === s.id ? { ...x, q: x.q + 10 } : x))
-                          }));
-                          simulateAsync(() => addToast(`${s.nome} reabastecido.`));
+                          runAction(
+                            () => api.restockStock(s.id),
+                            `${s.nome} reabastecido.`
+                          );
                         }}
                       >
                         Reabastecer
@@ -621,11 +1225,10 @@ function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading
                             okLbl: 'Excluir',
                             danger: true,
                             onConfirm: () => {
-                              setS((prev) => ({
-                                ...prev,
-                                stock: prev.stock.filter((x) => x.id !== s.id)
-                              }));
-                              simulateAsync(() => addToast('Produto excluído.'));
+                              runAction(
+                                () => api.deleteStock(s.id),
+                                'Produto excluído.'
+                              );
                             }
                           });
                         }}
@@ -646,34 +1249,54 @@ function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading
       return (
         <>
           <h1>Pedidos e status</h1>
+          <p>O status é atualizado pelo entregador responsável.</p>
           <div className="grid c3">
-            {S.orders.map((o) => (
-              <article key={o.id} className="card">
-                <h2>{o.id}: {o.prod}</h2>
-                <Badge index={o.st} />
-                <p>{o.cor}, tam. {o.tam}, {o.qtd} un.<br />Cliente {o.cli}</p>
-                <label className="field">
-                  <span className="l">Atualizar status</span>
-                  <select
-                    value={o.st}
-                    onChange={(e) => {
-                      const newSt = Number(e.target.value);
-                      setS((prev) => ({
-                        ...prev,
-                        orders: prev.orders.map((x) => (x.id === o.id ? { ...x, st: newSt } : x))
-                      }));
-                      simulateAsync(() => addToast(`Pedido ${o.id} atualizado.`));
-                    }}
+            {S.orders.map((o) => {
+              const driver = S.drivers.find((d) => d.id === o.entregador);
+              return (
+                <article key={o.id} className="card">
+                  <h2>{o.id}: {o.prod}</h2>
+                  <Badge index={o.st} />
+                  <p>
+                    {o.cor}, tam. {o.tam}, {o.qtd} un.<br />
+                    Cliente {o.cli} · {DISTS[o.dk]}
+                  </p>
+                  <p>
+                    Entregador:{' '}
+                    <strong>{driver ? driver.nome : 'Aguardando atribuição'}</strong>
+                  </p>
+                  <button
+                    className="btn pri"
+                    style={{ width: '100%' }}
+                    onClick={() => setS((prev) => ({ ...prev, track: o.id, view: 'rastreio' }))}
                   >
-                    {ST.map((s, i) => (
-                      <option key={i} value={i}>{s}</option>
-                    ))}
-                  </select>
-                </label>
-              </article>
-            ))}
+                    Rastrear pedido
+                  </button>
+                </article>
+              );
+            })}
           </div>
         </>
+      );
+
+    case 'clientes':
+      return (
+        <ClientsAdmin
+          S={S}
+          setS={setS}
+          addToast={addToast}
+          applyServerState={applyServerState}
+        />
+      );
+
+    case 'entregadores':
+      return (
+        <DriversAdmin
+          S={S}
+          setS={setS}
+          addToast={addToast}
+          applyServerState={applyServerState}
+        />
       );
 
     default:
@@ -681,13 +1304,289 @@ function ViewContent({ S, setS, addToast, changeView, setModalConfig, setLoading
   }
 }
 
+/* CLIENTES (ACESSO CRIADO PELA EMPRESA) */
+
+function ClientsAdmin({ S, setS, addToast, applyServerState }) {
+  const [form, setForm] = useState({ nome: '', em: '' });
+  const [errors, setErrors] = useState({});
+  const [created, setCreated] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    const errs = {};
+    if (form.nome.trim().length < 3) errs.nome = 'Informe o nome do cliente.';
+    if (!EMAIL_RE.test(form.em.trim())) {
+      errs.em = 'Digite um e-mail válido.';
+    } else if (S.clients.some((c) => c.em.toLowerCase() === form.em.trim().toLowerCase())) {
+      errs.em = 'Já existe um cliente com este e-mail.';
+    }
+    setErrors(errs);
+    if (Object.keys(errs).length) return;
+
+    setSubmitting(true);
+    try {
+      const data = await api.createClient({ nome: form.nome.trim(), em: form.em.trim() });
+      applyServerState(data.state);
+      setCreated(data.client);
+      setForm({ nome: '', em: '' });
+      addToast(`Acesso criado. ID ${data.client.id} gerado com sucesso.`);
+    } catch (err) {
+      setErrors({ em: err.message || 'Não foi possível criar o acesso.' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      <h1>Clientes</h1>
+      <p>Crie o acesso do cliente. O ID gerado funciona como senha no login.</p>
+
+      {created && (
+        <div className="banner ok">
+          <div>
+            <h2>Acesso criado</h2>
+            <p>
+              {created.nome} — e-mail <strong>{created.em}</strong> — senha (ID){' '}
+              <strong>{created.id}</strong>
+            </p>
+          </div>
+          <button className="btn sm" onClick={() => setCreated(null)}>Fechar</button>
+        </div>
+      )}
+
+      <section className="card" style={{ marginBottom: '20px' }}>
+        <h2>Novo cliente</h2>
+        <form onSubmit={handleCreate}>
+          <div className="two">
+            <label className="field">
+              <span className="l">Nome do cliente</span>
+              <input
+                value={form.nome}
+                onChange={(e) => {
+                  setForm((prev) => ({ ...prev, nome: e.target.value }));
+                  setErrors((prev) => ({ ...prev, nome: '' }));
+                }}
+              />
+              {errors.nome && <div className="hint err">{errors.nome}</div>}
+            </label>
+
+            <label className="field">
+              <span className="l">E-mail</span>
+              <input
+                type="email"
+                value={form.em}
+                onChange={(e) => {
+                  setForm((prev) => ({ ...prev, em: e.target.value }));
+                  setErrors((prev) => ({ ...prev, em: '' }));
+                }}
+              />
+              {errors.em && <div className="hint err">{errors.em}</div>}
+            </label>
+          </div>
+
+          <button className="btn pri" type="submit" disabled={submitting}>
+            {submitting ? 'Criando…' : 'Criar acesso'}
+          </button>
+        </form>
+      </section>
+
+      <div className="tw">
+        <table>
+          <thead>
+            <tr>
+              <th>Nome</th>
+              <th>E-mail</th>
+              <th>ID de acesso (senha)</th>
+              <th>Pedidos</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {S.clients.map((c) => (
+              <tr key={c.id}>
+                <td>{c.nome}</td>
+                <td>{c.em}</td>
+                <td><strong>{c.id}</strong></td>
+                <td>{S.orders.filter((o) => o.cli === c.id).length}</td>
+                <td>
+                  <button
+                    className="btn sm"
+                    onClick={() => {
+                      setS((prev) => ({
+                        ...prev,
+                        cur: { ...prev.cur, admin: `cliente-${c.id}` },
+                        from: null,
+                        view: 'chatA'
+                      }));
+                    }}
+                  >
+                    Conversar
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+/* ENTREGADORES (ACESSO CRIADO PELA EMPRESA) */
+
+function DriversAdmin({ S, setS, addToast, applyServerState }) {
+  const [form, setForm] = useState({ nome: '', em: '' });
+  const [errors, setErrors] = useState({});
+  const [created, setCreated] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    const errs = {};
+    if (form.nome.trim().length < 3) errs.nome = 'Informe o nome do entregador.';
+    if (!EMAIL_RE.test(form.em.trim())) {
+      errs.em = 'Digite um e-mail válido.';
+    } else if (S.drivers.some((d) => d.em.toLowerCase() === form.em.trim().toLowerCase())) {
+      errs.em = 'Já existe um entregador com este e-mail.';
+    }
+    setErrors(errs);
+    if (Object.keys(errs).length) return;
+
+    setSubmitting(true);
+    try {
+      const data = await api.createDriver({ nome: form.nome.trim(), em: form.em.trim() });
+      applyServerState(data.state);
+      setCreated(data.driver);
+      setForm({ nome: '', em: '' });
+      addToast(`Acesso criado. Código ${data.driver.id} gerado com sucesso.`);
+    } catch (err) {
+      setErrors({ em: err.message || 'Não foi possível criar o acesso.' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      <h1>Entregadores</h1>
+      <p>Crie o acesso do entregador. O código gerado funciona como senha no login.</p>
+
+      {created && (
+        <div className="banner ok">
+          <div>
+            <h2>Acesso criado</h2>
+            <p>
+              {created.nome} — e-mail <strong>{created.em}</strong> — código{' '}
+              <strong>{created.id}</strong>
+            </p>
+          </div>
+          <button className="btn sm" onClick={() => setCreated(null)}>Fechar</button>
+        </div>
+      )}
+
+      <section className="card" style={{ marginBottom: '20px' }}>
+        <h2>Novo entregador</h2>
+        <form onSubmit={handleCreate}>
+          <div className="two">
+            <label className="field">
+              <span className="l">Nome do entregador</span>
+              <input
+                value={form.nome}
+                onChange={(e) => {
+                  setForm((prev) => ({ ...prev, nome: e.target.value }));
+                  setErrors((prev) => ({ ...prev, nome: '' }));
+                }}
+              />
+              {errors.nome && <div className="hint err">{errors.nome}</div>}
+            </label>
+
+            <label className="field">
+              <span className="l">E-mail</span>
+              <input
+                type="email"
+                value={form.em}
+                onChange={(e) => {
+                  setForm((prev) => ({ ...prev, em: e.target.value }));
+                  setErrors((prev) => ({ ...prev, em: '' }));
+                }}
+              />
+              {errors.em && <div className="hint err">{errors.em}</div>}
+            </label>
+          </div>
+
+          <button className="btn pri" type="submit" disabled={submitting}>
+            {submitting ? 'Criando…' : 'Criar acesso'}
+          </button>
+        </form>
+      </section>
+
+      <div className="tw">
+        <table>
+          <thead>
+            <tr>
+              <th>Nome</th>
+              <th>E-mail</th>
+              <th>Código de acesso (senha)</th>
+              <th>Empresa</th>
+              <th>Entregas</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {S.drivers.map((d) => (
+              <tr key={d.id}>
+                <td>{d.nome}</td>
+                <td>{d.em}</td>
+                <td><strong>{d.id}</strong></td>
+                <td>{d.empresa}</td>
+                <td>{S.orders.filter((o) => o.entregador === d.id).length}</td>
+                <td>
+                  <button
+                    className="btn sm"
+                    onClick={() => {
+                      setS((prev) => ({
+                        ...prev,
+                        cur: {
+                          ...prev.cur,
+                          admin: `entregador-${d.id}-${S.user.companyId}`
+                        },
+                        from: null,
+                        view: 'chatA'
+                      }));
+                    }}
+                  >
+                    Conversar
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
 /* CHAT */
 
-function ChatUI({ S, setS, addToast, isAdmin, ph }) {
+function buildDriverStore(S) {
+  return { ...S.chatsA, ...S.chats };
+}
+
+function ChatUI({ S, setS, addToast, applyServerState, isAdmin, isDriver, ph }) {
   const [inputMsg, setInputMsg] = useState('');
+  const [sending, setSending] = useState(false);
   const logRef = useRef(null);
 
-  const store = isAdmin ? S.chatsA : S.chats;
+  const store = isDriver
+    ? buildDriverStore(S)
+    : isAdmin
+      ? S.chatsA
+      : Object.fromEntries(
+          Object.entries(S.chats).filter(([, x]) => !x.cli || x.cli === S.user.id)
+        );
   const k = S.cur[S.role];
 
   useEffect(() => {
@@ -705,7 +1604,9 @@ function ChatUI({ S, setS, addToast, isAdmin, ph }) {
                 onClick={() => setS((prev) => ({ ...prev, cur: { ...prev.cur, [prev.role]: id } }))}
               >
                 <strong>{x.nome}</strong>
-                <span>{esc(x.msgs[x.msgs.length - 1].t)}</span>
+                <span>
+                  {x.msgs.length ? esc(x.msgs[x.msgs.length - 1].t) : 'Nenhuma mensagem ainda'}
+                </span>
               </button>
             </li>
           ))}
@@ -716,27 +1617,43 @@ function ChatUI({ S, setS, addToast, isAdmin, ph }) {
 
   const c = store[k];
 
-  const handleSend = (e) => {
+  if (!c) {
+    return (
+      <>
+        <h1>Mensagens</h1>
+        <p className="chat-empty">Conversa não encontrada.</p>
+        <button
+          className="btn sm"
+          onClick={() => setS((prev) => ({ ...prev, cur: { ...prev.cur, [prev.role]: null } }))}
+        >
+          Todas as conversas
+        </button>
+      </>
+    );
+  }
+
+  const handleSend = async (e) => {
     e.preventDefault();
-    if (!inputMsg.trim()) return;
+    const text = inputMsg.trim();
+    if (!text || sending) return;
 
-    const h = new Date().toTimeString().slice(0, 5);
-    const newMsg = { me: 1, t: inputMsg.trim(), h };
-    const targetStore = isAdmin ? 'chatsA' : 'chats';
+    const targetStore = isDriver ? c.targetStore : isAdmin ? 'chatsA' : 'chats';
+    if (!targetStore) {
+      addToast('Conversa indisponível.');
+      return;
+    }
 
-    setS((prev) => ({
-      ...prev,
-      [targetStore]: {
-        ...prev[targetStore],
-        [k]: {
-          ...prev[targetStore][k],
-          msgs: [...prev[targetStore][k].msgs, newMsg]
-        }
-      }
-    }));
-
-    setInputMsg('');
-    addToast('Mensagem enviada.');
+    setSending(true);
+    try {
+      const data = await api.sendMessage(targetStore, k, text);
+      applyServerState(data.state);
+      setInputMsg('');
+      addToast('Mensagem enviada.');
+    } catch (err) {
+      addToast(err.message || 'Não foi possível enviar a mensagem.');
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -752,12 +1669,16 @@ function ChatUI({ S, setS, addToast, isAdmin, ph }) {
       <h1>{c.nome}</h1>
 
       <div className="chat" ref={logRef}>
-        {c.msgs.map((m, idx) => (
-          <div key={idx} className={`msg ${m.me ? 'me' : ''}`}>
-            {esc(m.t)}
-            <small>{m.me ? 'Você' : c.nome}, {m.h}</small>
-          </div>
-        ))}
+        {c.msgs.length === 0 && <p className="chat-empty">Nenhuma mensagem ainda.</p>}
+        {c.msgs.map((m, idx) => {
+          const mine = isDriver ? !m.me : m.me;
+          return (
+            <div key={idx} className={`msg ${mine ? 'me' : ''}`}>
+              {esc(m.t)}
+              <small>{mine ? 'Você' : c.outro || c.nome}, {m.h}</small>
+            </div>
+          );
+        })}
       </div>
 
       <form className="row" onSubmit={handleSend}>
@@ -765,8 +1686,11 @@ function ChatUI({ S, setS, addToast, isAdmin, ph }) {
           placeholder={ph}
           value={inputMsg}
           onChange={(e) => setInputMsg(e.target.value)}
+          disabled={sending}
         />
-        <button className="btn pri">Enviar</button>
+        <button className="btn pri" disabled={sending}>
+          {sending ? 'Enviando…' : 'Enviar'}
+        </button>
       </form>
     </>
   );
